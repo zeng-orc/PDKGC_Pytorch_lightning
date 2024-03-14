@@ -1,0 +1,19 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: 当前文件",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "-dataset", "wikidata5m_transductive", "-batch_size", "450", "-pretrained_model", "bert_base", "-epoch", "20", "-desc_max_length", "40", "-lr", "1e-4", "-prompt_length", "5", "-label_smoothing", "0", "-hid_drop", "0.1", "-hid_drop2", "0.1", "-feat_drop", "0.1", "-embed_dim", "180", "-k_w", "10", "-k_h", "18", "-gpu", "0"
+            ]
+        }
+    ]
+}

@@ -2,11 +2,11 @@ import numpy as np
 import pytorch_lightning as pl
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 
-from helper import dataloader_output_to_tensor, get_lar_sample_bank
+from helper import dataloader_output_to_tensor
 
 
 class BaseDataset(Dataset):
-    def __init__(self, configs, tok, triples, text_dict, mode='train', gt=None, lars_dict=None):
+    def __init__(self, configs, tok, triples, text_dict, mode='train', gt=None):
         super().__init__()
         self.configs = configs
         self.tok = tok
@@ -18,9 +18,6 @@ class BaseDataset(Dataset):
         if gt is not None:
             self.train_tail_gt = gt['train_tail_gt']
             self.train_head_gt = gt['train_head_gt']
-        if lars_dict is not None:
-            self.name_lars = lars_dict['name_lars']
-            self.desc_lars = lars_dict['desc_lars']
 
     def parse_ent_name(self, name):
         if self.configs.dataset == 'WN18RR':
@@ -50,14 +47,13 @@ class BaseDataset(Dataset):
         agg_data['triple'] = dataloader_output_to_tensor(data, 'triple', return_list=True)
         if self.mode == 'train':
             agg_data['labels'] = dataloader_output_to_tensor(data, 'labels').squeeze(-1)
-        if self.mode == 'train' and self.configs.n_lar > 0:
-            agg_data['lars'] = dataloader_output_to_tensor(data, 'lars')
+        agg_data['pred_pos'] = dataloader_output_to_tensor(data, 'pred_pos', return_list=True)
         return agg_data
 
 
 class CELossDataset(BaseDataset):
-    def __init__(self, configs, tok, triples, text_dict, mode='train', gt=None, lars_dict=None):
-        super().__init__(configs, tok, triples, text_dict, mode, gt, lars_dict)
+    def __init__(self, configs, tok, triples, text_dict, mode='train', gt=None):
+        super().__init__(configs, tok, triples, text_dict, mode, gt)
         self.all_ent = set(range(configs.n_ent))
 
     def __len__(self):
@@ -97,26 +93,8 @@ class CELossDataset(BaseDataset):
         tokenized_src = self.tok(src, text_pair=text_pair, max_length=self.configs.text_len, truncation=True)
         source_ids = tokenized_src.input_ids
         source_mask = tokenized_src.attention_mask
-        if self.mode == 'train' and self.configs.n_lar > 0:
-            gt = self.train_tail_gt if mode == 'predict_tail' else self.train_head_gt
-            if self.configs.use_speedup:
-                lar_list = list((set(self.name_lars[tgt_ent]) | set(self.desc_lars[tgt_ent])) - set(gt[ent_rel]))
-                if len(lar_list) < self.configs.n_lar:
-                    lars = lar_list + np.random.choice(list(self.all_ent), self.configs.n_lar - len(lar_list), replace=False).tolist()
-                else:
-                    lars = np.random.choice(lar_list, self.configs.n_lar, replace=False).tolist()
-            else:
-                name_lar_max_len = self.configs.n_lar // 2
-                name_lars = list(set(self.name_lars[tgt_ent]) - set(gt[ent_rel]))
-                desc_lars = list(set(self.desc_lars[tgt_ent]) - set(gt[ent_rel]))
-                name_lars = name_lars if len(name_lars) < name_lar_max_len else np.random.choice(name_lars, name_lar_max_len, replace=False).tolist()
-                desc_lar_max_len = self.configs.n_lar - len(name_lars)
-                desc_lars = desc_lars if len(desc_lars) < desc_lar_max_len else np.random.choice(desc_lars, desc_lar_max_len, replace=False).tolist()
-                if len(name_lars + desc_lars) < self.configs.n_lar:
-                    other_lars = np.random.choice(list(range(self.configs.n_ent)), self.configs.n_lar - len(name_lars + desc_lars), replace=False).tolist()
-                else:
-                    other_lars = []
-                lars = name_lars + desc_lars + other_lars
+        source_ids.insert(-1, 103)
+        source_mask.insert(-1, 1)
 
         out = {
             'source_ids': source_ids,
@@ -124,12 +102,11 @@ class CELossDataset(BaseDataset):
             'triple': triple,
             'ent_rel': ent_rel,
             'tgt_ent': tgt_ent,
+            'pred_pos': source_ids.index(103),
         }
 
         if self.mode == 'train':
             out['labels'] = [tgt_ent]
-        if self.mode == 'train' and self.configs.n_lar > 0:
-            out['lars'] = lars
         return out
 
 
@@ -144,11 +121,8 @@ class KGCDataModule(pl.LightningDataModule):
         self.text_dict = text_dict
         self.tok = tok
         self.gt = gt
-        self.lars_dict = None
-        if configs.n_lar > 0:
-            self.lars_dict = get_lar_sample_bank(configs, text_dict)
 
-        self.train_both = CELossDataset(configs, tok, train, text_dict, 'train', self.gt, self.lars_dict)
+        self.train_both = CELossDataset(configs, tok, train, text_dict, 'train', self.gt)
         self.valid_tail = CELossDataset(configs, tok, valid, text_dict, 'predict_tail')
         self.valid_head = CELossDataset(configs, tok, valid, text_dict, 'predict_head')
         self.test_tail = CELossDataset(configs, tok, test, text_dict, 'predict_tail')

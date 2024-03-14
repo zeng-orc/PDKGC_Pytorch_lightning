@@ -118,7 +118,7 @@ class ConvE(nn.Module):
         return x
 
     def get_logits(self, pred, ent_embed):
-        logits = torch.mm(pred, ent_embed.transpose(1, 0))
+        logits = torch.einsum('bkf,nkf->bkn', [pred, ent_embed])
         logits += self.bias.expand_as(logits)
         return logits
 

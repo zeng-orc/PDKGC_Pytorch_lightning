@@ -7,7 +7,9 @@ import pandas as pd
 import nltk
 import torch
 import torch.nn as nn
+from torch.nn import Parameter
 import torch.nn.functional as F
+from torch.nn.init import xavier_normal_
 from torch.nn.utils.rnn import pad_sequence
 from models.graph_models import ConvE, RotatE, TransE, DistMult, Null
 
@@ -89,7 +91,7 @@ def dataloader_output_to_tensor(output_dict, key, padding_value=None, return_lis
 
 
 def _get_performance(ranks):
-    ranks = np.array(ranks, dtype=np.float)
+    ranks = np.array(ranks, dtype=float)
     out = dict()
     out['mr'] = ranks.mean(axis=0)
     out['mrr'] = (1. / ranks).mean(axis=0)
@@ -99,7 +101,7 @@ def _get_performance(ranks):
     return out
 
 
-def get_performance(model, tail_ranks, head_ranks):
+def get_performance(model, tail_ranks, head_ranks, mode):
     tail_out = _get_performance(tail_ranks)
     head_out = _get_performance(head_ranks)
     mr = np.array([tail_out['mr'], head_out['mr']])
@@ -109,7 +111,7 @@ def get_performance(model, tail_ranks, head_ranks):
     hit10 = np.array([tail_out['hit10'], head_out['hit10']])
 
     val_mrr = mrr.mean().item()
-    model.log('val_mrr', val_mrr)
+    model.log('val_mrr_{}'.format(mode), val_mrr)
     perf = {'mrr': mrr, 'mr': mr, 'hit@1': hit1, 'hit@3': hit3, 'hit@10': hit10}
     perf = pd.DataFrame(perf, index=['tail ranking', 'head ranking'])
     perf.loc['mean ranking'] = perf.mean(axis=0)
@@ -147,52 +149,41 @@ def get_loss_fn(configs):
         return LabelSmoothingCrossEntropy(configs.label_smoothing)
 
 
-def get_lar_sample_bank(configs, text_dict):
-    def process(tokens, stop_words):
-        tokens = map(lambda x: x.lower(), tokens)
-        tokens = filter(lambda x: x not in stop_words, tokens)
-        return list(tokens)
+def get_param(shape):
+    param = Parameter(torch.Tensor(*shape));
+    xavier_normal_(param.data)
+    return param
 
-    ent_names = text_dict['ent_names']
-    ent_descs = text_dict['ent_descs']
-    nltk.download('stopwords')
-    stop_words = nltk.corpus.stopwords.words('english')
-    tokenizer = nltk.tokenize.RegexpTokenizer('\w+')
-    name_token2ids, desc_token2ids = ddict(list), ddict(list)
-    name_id2tokens, desc_id2tokens = dict(), dict()
-    desc_stop_words = stop_words
 
-    for i in tqdm(range(configs.n_ent), desc='Processing'):
-        name, desc = ent_names[i], ent_descs[i]
-        if configs.dataset == 'WN18RR':
-            name = name.split(' , ')[0]
-        name_tokens, desc_tokens = tokenizer.tokenize(name), tokenizer.tokenize(desc)
-        name_tokens, desc_tokens = process(name_tokens, stop_words), process(desc_tokens, desc_stop_words)
-        for token in name_tokens:
-            name_token2ids[token].append(i)
-        name_id2tokens[i] = list(set(name_tokens))
-        for token in desc_tokens:
-            desc_token2ids[token].append(i)
-        desc_id2tokens[i] = list(set(desc_tokens))
-    if configs.max_lar_samples > 0:
-        for key, value in name_token2ids.items():
-            if len(value) > configs.max_lar_samples:
-                name_token2ids[key] = random.sample(value, configs.max_lar_samples)
-        for key, value in desc_token2ids.items():
-            if len(value) > configs.max_lar_samples:
-                desc_token2ids[key] = random.sample(value, configs.max_lar_samples)
-    name_lars, desc_lars = {}, {}
-    for i in tqdm(range(configs.n_ent), desc='Processing name'):
-        lar_list = list(set([ids for token in name_id2tokens[i] for ids in name_token2ids[token]]))
-        if configs.max_lar_samples > 0 and len(lar_list) > configs.max_lar_samples:
-            lar_list = random.sample(lar_list, configs.max_lar_samples)
-        name_lars[i] = lar_list
-    for i in tqdm(range(configs.n_ent), desc='Processing desc'):
-        lar_list = list(set([ids for token in desc_id2tokens[i] for ids in desc_token2ids[token]]))
-        if configs.max_lar_samples > 0 and len(lar_list) > configs.max_lar_samples:
-            lar_list = random.sample(lar_list, configs.max_lar_samples)
-        desc_lars[i] = lar_list
+def construct_adj(configs, train):
+    device = int(configs.gpus.split(',')[0])
+    edge_index, edge_type = [], []
 
-    lars_dict = {'name_lars': name_lars, 'desc_lars': desc_lars}
-    # return token_dict, negs_dict
-    return lars_dict
+    for sub, obj, rel in train:
+        edge_index.append((sub, obj))
+        edge_type.append(rel)
+
+    # Adding inverse edges
+    for sub, obj, rel in train:
+        edge_index.append((obj, sub))
+        edge_type.append(rel + configs.n_rel)
+    # edge_index: 2 * 2E, edge_type: 2E * 1
+    edge_index = torch.LongTensor(edge_index).to(device).t()
+    edge_type = torch.LongTensor(edge_type).to(device)
+
+    return edge_index, edge_type
+
+
+def com_mult(a, b):
+    r1, i1 = a[..., 0], a[..., 1]
+    r2, i2 = b[..., 0], b[..., 1]
+    return torch.stack([r1 * r2 - i1 * i2, r1 * i2 + i1 * r2], dim=-1)
+
+
+def conj(a):
+    a[..., 1] = -a[..., 1]
+    return a
+
+
+def ccorr(a, b):
+    return torch.irfft(com_mult(conj(torch.rfft(a, 1)), torch.rfft(b, 1)), 1, signal_sizes=(a.shape[-1],))

@@ -7,10 +7,11 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 import transformers
 from transformers import AutoConfig, BertTokenizer
+from models.GCN_model import CapsuleBase
 from models.P_model import KGCPromptTuner
 from kgc_data import KGCDataModule
-from helper import get_num, read, read_name, read_file, get_gt
-from callbacks import PrintingCallback
+from helper import get_num, read, read_name, read_file, get_gt, construct_adj
+from callbacks import PrintingCallback, TimeCallback
 
 
 def main():
@@ -28,8 +29,11 @@ def main():
         'enable_progress_bar': True,
     }
     if torch.cuda.is_available():
-        trainer_params['devices'] = [int(configs.gpu)]
+        trainer_params['devices'] = [int(gpu) for gpu in configs.gpus.split(',')]
         trainer_params['accelerator'] = 'gpu'
+        if len(trainer_params['devices']) > 1:
+            trainer_params['strategy'] = 'dp'
+            configs.distributed_training = True
     else:
         trainer_params['accelerator'] = 'cpu'
 
@@ -48,6 +52,7 @@ def main():
     # ground truth .shape: dict, example: {hr_str_key1: [t_id11, t_id12, ...], (hr_str_key2: [t_id21, t_id22, ...], ...}
     train_tail_gt, train_head_gt = get_gt(configs, train)
     all_tail_gt, all_head_gt = get_gt(configs, all_triples)
+    edge_index, edge_type = construct_adj(configs, train)
 
     gt = {
         'train_tail_gt': train_tail_gt,
@@ -70,30 +75,64 @@ def main():
     print('datamodule construction done.', flush=True)
 
     ## construct trainer
-    checkpoint_callback = ModelCheckpoint(
-        monitor='val_mrr',
+    checkpoint_callback_struc = ModelCheckpoint(
+        monitor='val_mrr_struc',
         dirpath=configs.save_dir,
-        filename=configs.dataset + '-{epoch:03d}-{' + "val_mrr" + ':.4f}',
+        filename=configs.dataset + '-{epoch:03d}-{' + "val_mrr_struc" + ':.4f}',
+        mode='max'
+    )
+    checkpoint_callback_text = ModelCheckpoint(
+        monitor='val_mrr_text',
+        dirpath=configs.save_dir,
+        filename=configs.dataset + '-{epoch:03d}-{' + "val_mrr_text" + ':.4f}',
+        mode='max'
+    )
+    checkpoint_callback_combine = ModelCheckpoint(
+        monitor='val_mrr_combine',
+        dirpath=configs.save_dir,
+        filename=configs.dataset + '-{epoch:03d}-{' + "val_mrr_combine" + ':.4f}',
         mode='max'
     )
     printing_callback = PrintingCallback()
+    # time_callback = TimeCallback()
     trainer_params['callbacks'] = [
-        checkpoint_callback,
+        checkpoint_callback_struc,
+        checkpoint_callback_text,
+        checkpoint_callback_combine,
         printing_callback,
+        # time_callback,
     ]
+    ## for debug
+    # trainer_params['limit_train_batches'] = 1
     trainer = pl.Trainer(**trainer_params)
 
-    ## construct model parameters
-    kw_args = {
-        'text_dict': text_dict,
-        'gt': gt,
+    ## initialize GCN model
+    kw_args_GCN = {
+        'edge_index': edge_index,
+        'edge_type': edge_type,
+        'num_rel': configs.n_rel,
     }
 
     if configs.model_path == '':
         if configs.continue_path == '':
-            model = KGCPromptTuner(configs, **kw_args)
+            GCN_model = CapsuleBase(**kw_args_GCN, params=configs)
         else:
-            model = KGCPromptTuner.load_from_checkpoint(configs.continue_path, strict=False, configs=configs, **kw_args)
+            GCN_model = load_GCN_model_from_pretrained(configs, kw_args_GCN, configs.continue_path)
+    else:
+        GCN_model = load_GCN_model_from_pretrained(configs, kw_args_GCN, configs.model_path)
+
+    ## construct model parameters
+    kw_args_main = {
+        'text_dict': text_dict,
+        'gt': gt,
+        'GCN_model': GCN_model,
+    }
+
+    if configs.model_path == '':
+        if configs.continue_path == '':
+            model = KGCPromptTuner(configs, **kw_args_main)
+        else:
+            model = KGCPromptTuner.load_from_checkpoint(configs.continue_path, strict=False, configs=configs, **kw_args_main)
         print('model construction done.', flush=True)
         trainable_params, non_trainable_params = 0, 0
         for name, params in model.named_parameters():
@@ -104,12 +143,25 @@ def main():
                 non_trainable_params += params.numel()
         print('trainable params:', trainable_params, 'non trainable params:', non_trainable_params)
         trainer.fit(model, datamodule)
-        model_path = checkpoint_callback.best_model_path
+        # model_path = checkpoint_callback_struc.best_model_path
+        # model_path = checkpoint_callback_text.best_model_path
+        model_path = checkpoint_callback_combine.best_model_path
     else:
         model_path = configs.model_path
     print('model_path:', model_path, flush=True)
-    model = KGCPromptTuner.load_from_checkpoint(model_path, strict=False, configs=configs, **kw_args)
+    model = KGCPromptTuner.load_from_checkpoint(model_path, strict=False, configs=configs, **kw_args_main)
     trainer.test(model, dataloaders=datamodule)
+
+
+def load_GCN_model_from_pretrained(configs, kw_args_GCN, pretrained_model_path):
+    state = torch.load(pretrained_model_path)
+    model_dict = state['state_dict']
+    GCN_model = CapsuleBase(**kw_args_GCN, params=configs)
+    GCN_model_dict = GCN_model.state_dict()
+    GCN_model_dict_pretrained = {'.'.join(k.split('.')[1:]):v for k, v in model_dict.items() if k.split('.')[0] == 'GCN'}
+    GCN_model_dict.update(GCN_model_dict_pretrained)
+    GCN_model.load_state_dict(GCN_model_dict)
+    return GCN_model
 
 
 if __name__ == '__main__':
@@ -118,16 +170,17 @@ if __name__ == '__main__':
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('-dataset_path', type=str, default='./data/processed')
+    parser.add_argument('-dataset_path', type=str, default='/mnt/HDD/dataset')
     parser.add_argument('-jobid', type=str, default='XXXXXXXX')
     parser.add_argument('-dataset', dest='dataset', default='WN18RR',
                         help='Dataset to use, default: InferWiki16k')
-    parser.add_argument('-gpu', type=str, default='0', help='Set GPU Ids : Eg: For CPU = -1, For Single GPU = 0')
+    parser.add_argument('-gpus', type=str, default='0', help='Set GPU Ids : Eg: For CPU = -1, For Single GPU = 0, For Multiple GPU = 0,1')
     parser.add_argument('-seed', dest='seed', default=41504, type=int, help='Seed for randomization')
     parser.add_argument('-num_workers', type=int, default=4, help='Number of processes to construct batches')
     parser.add_argument('-save_dir', type=str, default='', help='')
 
-    parser.add_argument('-pretrained_model', type=str, default='t5-base', help='')
+    parser.add_argument('-pretrained_model', type=str, default='bert_large', choices = ['bert_large', 'bert_base', 'roberta_large', 'roberta_base'])
+    parser.add_argument('-pretrained_model_name', type=str, default='bert_large', help='')
     parser.add_argument('-batch_size', default=128, type=int, help='Batch size')
     parser.add_argument('-val_batch_size', default=128, type=int, help='Batch size')
     parser.add_argument('-src_max_length', default=512, type=int, help='')
@@ -152,23 +205,43 @@ if __name__ == '__main__':
     parser.add_argument('-bias', dest='bias', action='store_true', help='Whether to use bias in the model')
     parser.add_argument('-label_smoothing', default=0., type=float, help='Label smoothing')
     parser.add_argument('-use_log_ranks', action='store_true', help='')
-    parser.add_argument('-n_lar', default=0, type=int, help='Number of LARs')
     parser.add_argument('-gamma', default=1., type=float, help='Margin loss: margin between pos and neg')
-    parser.add_argument('-alpha', default=0., type=float, help='Weight between CE loss and margin loss')
     parser.add_argument('-graph_model', default='conve', type=str, help='[null | transe | distmult | conve | rotate]')
     parser.add_argument('-loss_gamma', default=0., type=float, help='Gamma for score function of transe and rotate')
     parser.add_argument('-lr_scheduler', default='linear', type=str, help='[linear | cosine]')
-    parser.add_argument('-max_lar_samples', default=-1, type=int, help='Maximum of negative samples')
     parser.add_argument('-continue_path', dest='continue_path', default='', help='The path for continuing training')
     parser.add_argument('-accumulate_grad_batches', default=1, type=int, help='')
-    parser.add_argument('-check_val_every_n_epoch', default=3, type=int, help='')
+    parser.add_argument('-check_val_every_n_epoch', default=1, type=int, help='')
     parser.add_argument('-use_speedup', action='store_true', help='')
     parser.add_argument('-text_len', default=72, type=int, help='')
     parser.add_argument('-use_fp16', action='store_true', help='')
     parser.add_argument('-prompt_hidden_dim', default=-1, type=int, help='')
     parser.add_argument('-alpha_step', default=0., type=float, help='')
+    
+    # GCN specific hyperparameters
+    parser.add_argument('-num_factors', dest="num_factors", default=4, type=int, help="Number of factors")
+    parser.add_argument('-alpha_corr', default=1e-1, type=float, help='Dropout for Feature')
+    parser.add_argument('-gcn_layer', dest='gcn_layer', default=1, type=int, help='Number of GCN Layers to use')
+    parser.add_argument('-head_num', dest="head_num", default=1, type=int, help="Number of attention heads")
+    parser.add_argument('-gcn_drop', dest='dropout', default=0.4, type=float, help='Dropout to use in GCN Layer')
+    parser.add_argument('-att_mode', dest='att_mode', default='dot_weight', help='Composition Operation to be used in RAGAT')
+    parser.add_argument('-mi_method', dest='mi_method', default='club_b', help='Composition Operation to be used in RAGAT')
+    parser.add_argument('-opn', dest='opn', default='cross', help='Composition Operation to be used in RAGAT')
+    parser.add_argument('-no_act', dest='no_act', action='store_true', help='whether to use non_linear function')
+
+    # Distributed_training
+    parser.add_argument('-distributed_training', dest='distributed_training', default=False, type=bool, help='whether to use distributed learning')
 
     configs = parser.parse_args()
+    configs.pretrained_model_name = configs.pretrained_model
+    if configs.pretrained_model == 'bert_large':
+        configs.pretrained_model = '/home/zyh/LMs/BERT_large'
+    elif configs.pretrained_model == 'bert_base':
+        configs.pretrained_model = '/home/zyh/LMs/BERT_base'
+    elif configs.pretrained_model == 'roberta_large':
+        configs.pretrained_model = '/home/zyh/LMs/RoBERTa_large'
+    elif configs.pretrained_model == 'roberta_base':
+        configs.pretrained_model = '/home/zyh/LMs/RoBERTa_base'
     n_ent = get_num(configs.dataset_path, configs.dataset, 'entity')
     n_rel = get_num(configs.dataset_path, configs.dataset, 'relation')
     configs.n_ent = n_ent

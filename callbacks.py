@@ -31,3 +31,52 @@ class PrintingCallback(Callback):
         print('Epoch: test', flush=True)
         print(pl_module.history['perf'], flush=True)
         print('=' * 50, flush=True)
+
+class TimeCallback(Callback):  
+    def on_train_epoch_start(self, trainer, pl_module):  
+        self.epoch_start_time = time.time()  
+  
+    def on_train_epoch_end(self, trainer, pl_module, outputs):  
+        epoch_end_time = time.time()  
+        epoch_time = epoch_end_time - self.epoch_start_time  
+        print(f"Epoch took: {epoch_time:.2f} seconds")  
+  
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):  
+        self.batch_start_time = time.time()  
+  
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):  
+        batch_end_time = time.time()  
+        batch_time = batch_end_time - self.batch_start_time  
+        print(f"Batch {batch_idx} took: {batch_time:.2f} seconds")  
+  
+    def on_after_backward(self, trainer, pl_module):  
+        backward_end_time = time.time()  
+        backward_time = backward_end_time - self.backward_start_time  
+        print(f"Backward took: {backward_time:.2f} seconds")
+  
+    def on_before_zero_grad(self, trainer, pl_module, optimizer):    
+        self.backward_start_time = time.time()  
+  
+    def on_before_optimizer_step(self, trainer, pl_module, optimizer, optimizer_idx):  
+        self.optimizer_start_time = time.time()  
+  
+    def on_after_optimizer_step(self, trainer, pl_module, optimizer, optimizer_idx):  
+        optimizer_end_time = time.time()  
+        optimizer_time = optimizer_end_time - self.optimizer_start_time  
+        print(f"Optimizer step took: {optimizer_time:.2f} seconds")  
+  
+    def on_validation_epoch_start(self, trainer, pl_module):  
+        self.val_epoch_start_time = time.time()  
+  
+    def on_validation_epoch_end(self, trainer, pl_module):  
+        val_epoch_end_time = time.time()  
+        val_epoch_time = val_epoch_end_time - self.val_epoch_start_time  
+        print(f"Validation epoch took: {val_epoch_time:.2f} seconds")  
+  
+    def on_validation_batch_start(self, trainer, pl_module, batch, batch_idx):  
+        self.val_batch_start_time = time.time()  
+  
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):  
+        val_batch_end_time = time.time()  
+        val_batch_time = val_batch_end_time - self.val_batch_start_time  
+        print(f"Validation batch {batch_idx} took: {val_batch_time:.2f} seconds")  

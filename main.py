@@ -171,6 +171,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument('-dataset_path', type=str, default='/mnt/HDD/dataset')
+    parser.add_argument('-pretrained_model_path', type=str, default='/home/zyh/LMs')
     parser.add_argument('-jobid', type=str, default='XXXXXXXX')
     parser.add_argument('-dataset', dest='dataset', default='WN18RR',
                         help='Dataset to use, default: InferWiki16k')
@@ -235,13 +236,13 @@ if __name__ == '__main__':
     configs = parser.parse_args()
     configs.pretrained_model_name = configs.pretrained_model
     if configs.pretrained_model == 'bert_large':
-        configs.pretrained_model = '/home/zyh/LMs/BERT_large'
+        configs.pretrained_model = os.path.join(configs.pretrained_model_path, 'BERT_large')
     elif configs.pretrained_model == 'bert_base':
-        configs.pretrained_model = '/home/zyh/LMs/BERT_base'
+        configs.pretrained_model = os.path.join(configs.pretrained_model_path, 'BERT_base')
     elif configs.pretrained_model == 'roberta_large':
-        configs.pretrained_model = '/home/zyh/LMs/RoBERTa_large'
+        configs.pretrained_model = os.path.join(configs.pretrained_model_path, 'RoBERTa_large')
     elif configs.pretrained_model == 'roberta_base':
-        configs.pretrained_model = '/home/zyh/LMs/RoBERTa_base'
+        configs.pretrained_model = os.path.join(configs.pretrained_model_path, 'RoBERTa_base')
     n_ent = get_num(configs.dataset_path, configs.dataset, 'entity')
     n_rel = get_num(configs.dataset_path, configs.dataset, 'relation')
     configs.n_ent = n_ent

@@ -2,4 +2,4 @@ python3 main.py -dataset wikidata5m_transductive -batch_size 1 -pretrained_model
 
 python3 main.py -dataset FB15k-237 -batch_size 128 -pretrained_model bert_base -epoch 60 -desc_max_length 40 -lr 5e-4 -prompt_length 10 -alpha_step 0.1 -label_smoothing 0.1 -embed_dim 156 -k_w 12 -k_h 13 -alpha_step 0.00001 -gpu 1 -num_factors 4
 
-python3 main.py -dataset WN18RR -batch_size 128 -pretrained_model bert_large -desc_max_length 40 -lr 5e-4 -prompt_length 10 -label_smoothing 0.1 -embed_dim 144 -k_w 12 -k_h 12 -alpha_step 0.00001 -gpus 1 -num_factors 2
+python3 main.py -dataset WN18RR -batch_size 128 -pretrained_model bert_large -desc_max_length 40 -lr 5e-4 -prompt_length 10 -label_smoothing 0.1 -embed_dim 144 -k_w 12 -k_h 12 -alpha_step 0.00001 -gpus 0 -num_factors 2

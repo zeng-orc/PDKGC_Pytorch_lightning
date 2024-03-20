@@ -8,6 +8,7 @@ from transformers import AutoConfig
 from helper import get_param, get_performance, get_loss_fn, GRAPH_MODEL_CLASS
 from models.prompter import Prompter
 from models.bert_for_layerwise import BertModelForLayerwise
+from models.roberta_for_layerwise import RobertaModelForLayerwise
 from models.AutomaticWeightedLoss import AutomaticWeightedLoss
 from models.GCN_model import CapsuleBase
 
@@ -45,7 +46,10 @@ class KGCPromptTuner(pl.LightningModule):
         self.plm_configs = AutoConfig.from_pretrained(configs.pretrained_model)
         self.plm_configs.prompt_length = self.configs.prompt_length
         self.plm_configs.prompt_hidden_dim = self.configs.prompt_hidden_dim
-        self.plm = BertModelForLayerwise.from_pretrained(configs.pretrained_model)
+        if 'roberta' in configs.pretrained_model_name:
+            self.plm = RobertaModelForLayerwise.from_pretrained(configs.pretrained_model)
+        elif 'bert' in configs.pretrained_model_name:
+            self.plm = BertModelForLayerwise.from_pretrained(configs.pretrained_model)
 
         self.prompter = Prompter(self.plm_configs, configs.embed_dim, configs.prompt_length)
         self.fc = nn.Linear(configs.prompt_length * self.plm_configs.hidden_size, configs.embed_dim)
@@ -64,7 +68,7 @@ class KGCPromptTuner(pl.LightningModule):
             self.alpha_corr = self.configs.alpha_corr
 
         # text prediction
-        ent_text_embeds_file = '/mnt/HDD/dataset/{}/entity_embeds_{}.pt'.format(self.configs.dataset, self.configs.pretrained_model_name.lower())
+        ent_text_embeds_file = '{}/{}/entity_embeds_{}.pt'.format(self.configs.dataset_path, self.configs.dataset, self.configs.pretrained_model_name.lower())
         self.ent_text_embeds = torch.load(ent_text_embeds_file)
         self.ent_transform = torch.nn.Linear(self.plm_configs.hidden_size, self.plm_configs.hidden_size)
 

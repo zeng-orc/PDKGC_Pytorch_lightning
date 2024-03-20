@@ -93,7 +93,11 @@ class CELossDataset(BaseDataset):
         tokenized_src = self.tok(src, text_pair=text_pair, max_length=self.configs.text_len, truncation=True)
         source_ids = tokenized_src.input_ids
         source_mask = tokenized_src.attention_mask
-        source_ids.insert(-1, 103)
+        if 'bert' in self.configs.pretrained_model_name:
+            mask_id = 103
+        elif 'roberta' in self.configs.pretrained_model_name:
+            mask_id = 50264
+        source_ids.insert(-1, mask_id)
         source_mask.insert(-1, 1)
 
         out = {
@@ -102,7 +106,7 @@ class CELossDataset(BaseDataset):
             'triple': triple,
             'ent_rel': ent_rel,
             'tgt_ent': tgt_ent,
-            'pred_pos': source_ids.index(103),
+            'pred_pos': source_ids.index(mask_id),
         }
 
         if self.mode == 'train':

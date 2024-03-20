@@ -6,7 +6,7 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 import transformers
-from transformers import AutoConfig, BertTokenizer
+from transformers import AutoConfig, BertTokenizer, RobertaTokenizer
 from models.GCN_model import CapsuleBase
 from models.P_model import KGCPromptTuner
 from kgc_data import KGCDataModule
@@ -63,7 +63,10 @@ def main():
 
     ent_names, rel_names = read_name(configs, configs.dataset_path, configs.dataset)
     ent_descs = read_file(configs, configs.dataset_path, configs.dataset, 'entityid2description.txt', 'desc')
-    tok = BertTokenizer.from_pretrained(configs.pretrained_model, add_prefix_space=False)
+    if 'roberta' in configs.pretrained_model_name:
+        tok = RobertaTokenizer.from_pretrained(configs.pretrained_model, add_prefix_space=False)
+    elif 'bert' in configs.pretrained_model_name:
+        tok = BertTokenizer.from_pretrained(configs.pretrained_model, add_prefix_space=False)
 
     text_dict = {
         'ent_names': ent_names,
